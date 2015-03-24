@@ -6,6 +6,7 @@ import getpass
 import json
 import os
 
+import click
 from columnize import columnize
 
 from connection import Connection
@@ -115,6 +116,71 @@ class ListFormatters:
 
 
 def main():
+    return f5_cli()
+
+
+@click.group()
+@click.pass_context
+@click.version_option()
+@click.option('--host', help='FQDN of the LB you are targeting')
+@click.option('--user', help="User name. Defaults to current user.")
+@click.option('--password', help="Password")
+@click.option('--verify/--no-verify',
+              help='Do or don\'t do SSL cert validation')
+@click.option('--partition', default="Common",
+              help='The target partition. Defaults to Common')
+@click.option('--formatter', type=click.Choice(ListFormatters.keys()),
+              default='columns',
+              help='Output format for lists. One of %(choices)s.')
+@click.option('--strip-prefix', default="/Common/",
+              help='Prefix to strip off each item in list')
+def f5_cli(ctx, host, user, password, verify, partition, formatter, strip_prefix):
+    config = get_config()
+    host = host or config.get('defaults', 'host')
+    user = user or config.get(host, 'user')
+    password = password or config.get(host, 'password')
+    if verify is None:
+        verify = config.getboolean(host, 'verify')
+
+    if password is None:
+        prompt = 'Password for {user}@{host}: '.format(user=user, host=host)
+        password = getpass.getpass(prompt)
+
+    class ContextObject(object): pass
+    ctx.obj = ContextObject()
+    ctx.obj.connection = get_f5_connection(
+        host, user, password, partition,
+        debug=True, verify=verify)
+    ctx.obj.partition = partition
+    ctx.obj.formatter = formatter
+    ctx.obj.strip_prefix = strip_prefix
+
+
+@f5_cli.group()
+@click.pass_context
+def pool(ctx):
+    parser = ctx.command.make_parser(ctx)
+    ctx.obj.object_connection = get_object_connection(
+        'pool', ctx.obj.connection, ctx.obj.partition, parser)
+
+
+@pool.command()
+@click.pass_context
+def list(ctx):
+    list_objects(ctx)
+
+
+def list_objects(ctx):
+    obj_list = []
+    for item in ctx.obj.object_connection.list():
+        if item.startswith(ctx.obj.strip_prefix):
+            item = item[len(ctx.obj.strip_prefix):]
+        obj_list.append(item)
+    formatter = ListFormatters.get(ctx.obj.formatter)
+    print(formatter(obj_list))
+
+
+def _main():
     parser = ArgumentParser(description="F5 Deployer")
     parser.add_argument('obj', action='store', metavar='object_type',
                         choices=objects,
